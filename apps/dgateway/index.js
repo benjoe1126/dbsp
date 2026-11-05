@@ -12,7 +12,7 @@
 
 const minimist = require("minimist");
 
-const argv = minimist(process.argv.slice(2));
+const argv = minimist(process.argv.slice(2), { boolean: ["plain-k8s-connector"] });
 const mode = String(argv._?.[0] || "help").toLowerCase();
 
 function runHelp() {
@@ -21,11 +21,16 @@ function runHelp() {
   console.log("Usage:");
   console.log("  ./js/bin/dbsp apps/dgateway/index.js test");
   console.log("  ./js/bin/dbsp apps/dgateway/index.js controller [--xds-address <addr>]");
-  console.log("      [--mode reconciler|open|sotw|smith] control-loop architecture (default");
-  console.log("                               reconciler: incremental + reconciler; open:");
-  console.log("                               incremental without the reconciler; sotw:");
-  console.log("                               full recompute; smith: incremental + the");
-  console.log("                               Smith dead-time compensator)");
+  console.log("      [--mode reconciler|open|sotw|smith]");
+  console.log("                               control-loop architecture (default reconciler:");
+  console.log("                               incremental + reconciler; open: incremental");
+  console.log("                               without the reconciler; sotw: full recompute;");
+  console.log("                               smith: incremental + the dual-rate Smith");
+  console.log("                               compensator)");
+  console.log("      [--plain-k8s-connector]  write every emitted change as it arrives; the");
+  console.log("                               default composes re-emitted changes into one");
+  console.log("                               write per object and absorbs the re-emissions");
+  console.log("                               of a write already issued");
   console.log("      [--debug]                attach layer observers (events on stdout)");
   console.log("      [--address-pool <cidr>]  assign each gateway a loopback data-plane");
   console.log("                               address from this /16 pool (local runs)");
@@ -38,6 +43,12 @@ function runHelp() {
   console.log("                               the default client budget)");
   console.log("      [--tick-period <ms>]     the window read-out clock's period, the");
   console.log("                               window's quantum (smith mode; default 1000)");
+  console.log("      [--bootstrap auto|manual] auto (default): the loop is closed from the first");
+  console.log("                               write; manual: the loop runs open until the");
+  console.log("                               operator has been quiet for --switch-quiet-ms,");
+  console.log("                               then closes (reconciler and smith)");
+  console.log("      [--switch-quiet-ms <ms>] the quiet period that ends a manual bootstrap");
+  console.log("                               (default 15000)");
 }
 
 function runController() {
@@ -53,6 +64,9 @@ function runController() {
     clientOpts.burst = argv.burst !== undefined ? Number(argv.burst) : 2 * clientOpts.qps;
   } else if (argv.burst !== undefined) {
     clientOpts.burst = Number(argv.burst);
+  }
+  if (argv["plain-k8s-connector"]) {
+    clientOpts.plainWrites = true;
   }
   kubernetes.runtime.start(clientOpts);
 
@@ -78,9 +92,20 @@ function runController() {
     throw new Error(`--smith-window must be a positive duration in ms, got ${argv["smith-window"]}`);
   }
 
+  // The bootstrap of a closed loop: auto closes it from the first write,
+  // manual runs it open until the operator has been quiet for the switch
+  // period, then closes it (manual/automatic mode, bumpless).
+  const bootstrap = String(argv.bootstrap || "auto");
+  if (!["auto", "manual"].includes(bootstrap)) {
+    throw new Error(`--bootstrap must be auto or manual, got ${argv.bootstrap}`);
+  }
+  const quietMs = Number(argv["switch-quiet-ms"] || 15000);
+  const closedLoop = loopMode === "reconciler" || loopMode === "smith";
+
   const pipeline = compilePipeline({
     bindings: "kubernetes",
     addressPool: argv["address-pool"],
+    bootstrap: closedLoop ? bootstrap : "auto",
     reconcile: loopMode === "reconciler",
     sotw: loopMode === "sotw",
     smith: loopMode === "smith",
@@ -98,11 +123,17 @@ function runController() {
       pipeline.observe(layer, (e) => console.log(`[debug:${layer}]`, JSON.stringify(e)));
     }
   }
-  logger.info(`delta-gateway controller started (mode ${loopMode})`);
+  if (closedLoop && bootstrap === "manual") {
+    pipeline.bootstrapManual(quietMs).then((ms) => {
+      logger.info(`bootstrap: loop closed after ${Math.round(ms)}ms (${quietMs}ms of quiet)`);
+    });
+  }
+  logger.info(`delta-gateway controller started (mode ${loopMode}${closedLoop ? `, bootstrap ${bootstrap}` : ""})`);
 }
 
 if (mode === "help") {
   runHelp();
+  exit();
 } else if (mode === "test") {
   require("./tests.js");
 } else if (mode === "controller") {
