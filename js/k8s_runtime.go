@@ -31,12 +31,13 @@ const (
 )
 
 type k8sRuntimeStartConfig struct {
-	Kubeconfig string                     `json:"kubeconfig,omitempty"`
-	QPS        float32                    `json:"qps,omitempty"`
-	Burst      int                        `json:"burst,omitempty"`
-	UserAgent  string                     `json:"userAgent,omitempty"`
-	APIServer  *k8sRuntimeAPIServerConfig `json:"apiServer,omitempty"`
-	Auth       *k8sRuntimeAuthConfig      `json:"auth,omitempty"`
+	Kubeconfig  string                     `json:"kubeconfig,omitempty"`
+	QPS         float32                    `json:"qps,omitempty"`
+	Burst       int                        `json:"burst,omitempty"`
+	UserAgent   string                     `json:"userAgent,omitempty"`
+	PlainWrites bool                       `json:"plainWrites,omitempty"`
+	APIServer   *k8sRuntimeAPIServerConfig `json:"apiServer,omitempty"`
+	Auth        *k8sRuntimeAuthConfig      `json:"auth,omitempty"`
 }
 
 type k8sRuntimeAPIServerConfig struct {
@@ -55,12 +56,13 @@ type k8sRuntimeAuthConfig struct {
 }
 
 type k8sRuntimeConfigInput struct {
-	Kubeconfig string                    `json:"kubeconfig"`
-	QPS        float64                   `json:"qps"`
-	Burst      int                       `json:"burst"`
-	UserAgent  string                    `json:"userAgent"`
-	APIServer  *k8sRuntimeAPIServerInput `json:"apiServer"`
-	Auth       *k8sRuntimeAuthInput      `json:"auth"`
+	Kubeconfig  string                    `json:"kubeconfig"`
+	QPS         float64                   `json:"qps"`
+	Burst       int                       `json:"burst"`
+	UserAgent   string                    `json:"userAgent"`
+	PlainWrites bool                      `json:"plainWrites"`
+	APIServer   *k8sRuntimeAPIServerInput `json:"apiServer"`
+	Auth        *k8sRuntimeAuthInput      `json:"auth"`
 }
 
 type k8sRuntimeAPIServerInput struct {
@@ -445,10 +447,11 @@ func (v *VM) decodeK8sRuntimeConfigValue(value goja.Value) (k8sRuntimeStartConfi
 
 func normalizeK8sRuntimeConfig(in k8sRuntimeConfigInput) (k8sRuntimeStartConfig, error) {
 	cfg := k8sRuntimeStartConfig{
-		Kubeconfig: strings.TrimSpace(in.Kubeconfig),
-		QPS:        float32(in.QPS),
-		Burst:      in.Burst,
-		UserAgent:  strings.TrimSpace(in.UserAgent),
+		Kubeconfig:  strings.TrimSpace(in.Kubeconfig),
+		QPS:         float32(in.QPS),
+		Burst:       in.Burst,
+		UserAgent:   strings.TrimSpace(in.UserAgent),
+		PlainWrites: in.PlainWrites,
 	}
 	if in.QPS < 0 || in.Burst < 0 {
 		return k8sRuntimeStartConfig{}, fmt.Errorf("qps and burst must be non-negative")
@@ -566,9 +569,14 @@ func (v *VM) startK8sRuntime(cfg k8sRuntimeStartConfig) error {
 		}
 	}
 
+	// The connectors' writers compose re-emitted changes into one
+	// outstanding write per object and absorb the re-emissions of a write
+	// they have issued; plainWrites selects the plain actuator instead,
+	// which writes every emitted change as it arrives.
 	k8sCfg := k8sruntime.Config{
-		RESTConfig: restCfg,
-		Logger:     v.logger.WithName("kubernetes-runtime"),
+		RESTConfig:  restCfg,
+		PlainWrites: cfg.PlainWrites,
+		Logger:      v.logger.WithName("kubernetes-runtime"),
 	}
 	if cfg.APIServer != nil {
 		apiCfg, err := k8sruntime.NewDefaultAPIServerConfig(
