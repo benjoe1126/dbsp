@@ -232,7 +232,6 @@ func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("request id: %v", err), http.StatusBadRequest)
 		return
 	}
-
 	if !p.acquire(uid) {
 		http.Error(w, fmt.Sprintf("request %q is already in flight", uid), http.StatusConflict)
 		return
@@ -265,6 +264,7 @@ func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	resp, ok := p.await(sub)
+	p.log.Info("message received by producer", "msg", resp)
 	if !ok {
 		if r.Context().Err() == nil {
 			p.HandleError(fmt.Errorf("request %s: no response within %s", uid, p.timeout))
@@ -281,6 +281,8 @@ func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	pretty, _ := json.MarshalIndent(resp, "", " ")
+	fmt.Println("sending out http message with body\n", string(pretty))
 	_, _ = w.Write(out)
 }
 

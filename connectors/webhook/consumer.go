@@ -113,7 +113,7 @@ func (c *Consumer) Consume(_ context.Context, event dbspruntime.Event) error {
 		}
 		uid, err := documentUID(doc, c.uidPath)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("response id: %w", err))
+			errs = append(errs, fmt.Errorf("request id: %w", err))
 			return true
 		}
 		zs := zset.New()
