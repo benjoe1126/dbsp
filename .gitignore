@@ -19,6 +19,8 @@ connectors/kubernetes/bin/
 !js/examples/endpoints.js
 !js/examples/fetch-weather.js
 !js/examples/serve-pirate.js
+!js/examples/admission-webhook-operator.js
+!js/examples/admission-webhook.js
 !js/stdlib/**/*.js
 !js/stdlib/**/package.json
 !js/stdlib/**/LICENSE
