@@ -59,8 +59,15 @@ type ProducerSpec struct {
 	Server string `json:"server,omitempty"`
 	// Address is the listen address, e.g. ":8443". Required.
 	Address string `json:"address"`
-	// Path is the HTTP path served. Default: DefaultPath.
+	// Path is the HTTP path the producer's topic is served on. Default:
+	// DefaultPath.
 	Path string `json:"path,omitempty"`
+	// Routes maps further HTTP paths to the topics their requests are
+	// published to, so one server can feed several circuits, e.g.
+	// {"/validate": "validate-requests", "/mutate": "mutate-requests"}.
+	// With routes the producer's own topic is optional; when given, it is
+	// served on Path alongside them.
+	Routes map[string]string `json:"routes,omitempty"`
 	// CertFile and KeyFile, when both given, switch the server to HTTPS
 	// (Kubernetes admission webhooks require it).
 	CertFile string `json:"certFile,omitempty"`

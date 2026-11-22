@@ -3,6 +3,7 @@ package js
 import (
 	k8sconn "github.com/l7mp/dbsp/connectors/kubernetes"
 	misc "github.com/l7mp/dbsp/connectors/misc"
+	webhook "github.com/l7mp/dbsp/connectors/webhook"
 	xds "github.com/l7mp/dbsp/connectors/xds"
 	dbspruntime "github.com/l7mp/dbsp/engine/runtime"
 )
@@ -16,6 +17,7 @@ func (v *VM) registerConnectorFactories() {
 		misc.NewFactory(),
 		xds.NewFactory(xds.Env{Server: v.lookupXDSServer}),
 		k8sconn.NewFactory(k8sconn.Env{Runtime: v.ensureK8sRuntime}),
+		webhook.NewFactory(),
 	}
 }
 

@@ -752,6 +752,14 @@ func (v *VM) injectGlobals() error {
 		return err
 	}
 
+	webhookObj, err := v.newWebhookNamespace()
+	if err != nil {
+		return err
+	}
+	if err := v.rt.Set("webhook", webhookObj); err != nil {
+		return err
+	}
+
 	fmtObj := v.rt.NewObject()
 	if err := fmtObj.Set("jsonl", v.wrap(v.formatJSONL)); err != nil {
 		return err

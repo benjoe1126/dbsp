@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,15 +30,14 @@ const maxBodySize = 4 << 20
 const shutdownGrace = 5 * time.Second
 
 // Producer is an HTTP server that publishes each request body as a
-// document to its topic and answers the request with the response the
+// document to the topic routed to its path and answers the request with the response the
 // circuit routes back to ResponseTopic(server, uid).
 type Producer struct {
 	*dbspruntime.BaseProducer
 
-	topic    string
+	routes   map[string]string // HTTP path -> topic
 	server   string
 	address  string
-	path     string
 	certFile string
 	keyFile  string
 	uidPath  string
@@ -57,13 +58,14 @@ type Producer struct {
 
 var _ dbspruntime.Producer = (*Producer)(nil)
 
-// NewProducer builds the webhook server source publishing to topic.
+// NewProducer builds the webhook server source publishing the requests
+// on spec.Path to topic and those on each of spec.Routes to its topic.
 func NewProducer(topic string, spec ProducerSpec, deps Deps) (*Producer, error) {
 	if deps.Runtime == nil {
 		return nil, fmt.Errorf("webhook: runtime is required")
 	}
-	if topic == "" {
-		return nil, fmt.Errorf("webhook: topic is required")
+	if topic == "" && len(spec.Routes) == 0 {
+		return nil, fmt.Errorf("webhook: topic or routes is required")
 	}
 	if spec.Address == "" {
 		return nil, fmt.Errorf("webhook: address is required")
@@ -77,6 +79,27 @@ func NewProducer(topic string, spec ProducerSpec, deps Deps) (*Producer, error) 
 	if spec.Path == "" {
 		spec.Path = DefaultPath
 	}
+	routes := map[string]string{}
+	for path, t := range spec.Routes {
+		if path == "" || t == "" {
+			return nil, fmt.Errorf("webhook: route %q -> %q: path and topic must be non-empty", path, t)
+		}
+		routes[path] = t
+	}
+	if topic != "" {
+		if _, ok := routes[spec.Path]; ok {
+			return nil, fmt.Errorf("webhook: path %q is routed twice", spec.Path)
+		}
+		routes[spec.Path] = topic
+	}
+	topics := slices.Sorted(func(yield func(string) bool) {
+		for _, t := range routes {
+			if !yield(t) {
+				return
+			}
+		}
+	})
+	topics = slices.Compact(topics)
 	if spec.UIDPath == "" {
 		spec.UIDPath = DefaultRequestUIDPath
 	}
@@ -92,13 +115,13 @@ func NewProducer(topic string, spec ProducerSpec, deps Deps) (*Producer, error) 
 		timeout = d
 	}
 
-	logger := deps.logger().WithName("webhook-producer").WithValues("server", spec.Server, "topic", topic)
+	logger := deps.logger().WithName("webhook-producer").WithValues("server", spec.Server, "topics", topics)
 	base, err := dbspruntime.NewBaseProducer(dbspruntime.BaseProducerConfig{
-		Name:          fmt.Sprintf("webhook/server/%s/%s", spec.Server, topic),
+		Name:          fmt.Sprintf("webhook/server/%s/%s", spec.Server, strings.Join(topics, ",")),
 		Publisher:     deps.Runtime.NewPublisher(),
 		ErrorReporter: deps.Runtime,
 		Logger:        logger,
-		Topics:        []string{topic},
+		Topics:        topics,
 	})
 	if err != nil {
 		return nil, err
@@ -106,10 +129,9 @@ func NewProducer(topic string, spec ProducerSpec, deps Deps) (*Producer, error) 
 
 	return &Producer{
 		BaseProducer: base,
-		topic:        topic,
+		routes:       routes,
 		server:       spec.Server,
 		address:      spec.Address,
-		path:         spec.Path,
 		certFile:     spec.CertFile,
 		keyFile:      spec.KeyFile,
 		uidPath:      spec.UIDPath,
@@ -129,7 +151,7 @@ func (p *Producer) String() string {
 	if p == nil {
 		return "producer<webhook>{<nil>}"
 	}
-	return fmt.Sprintf("producer<webhook>{name=%q, server=%q, address=%q, topic=%q}", p.Name(), p.server, p.address, p.topic)
+	return fmt.Sprintf("producer<webhook>{name=%q, server=%q, address=%q, routes=%v}", p.Name(), p.server, p.address, p.routes)
 }
 
 // MarshalJSON provides a stable machine-readable representation.
@@ -143,8 +165,7 @@ func (p *Producer) MarshalJSON() ([]byte, error) {
 		"name":      p.Name(),
 		"server":    p.server,
 		"address":   p.address,
-		"path":      p.path,
-		"topic":     p.topic,
+		"routes":    p.routes,
 	})
 }
 
@@ -172,7 +193,9 @@ func (p *Producer) Start(ctx context.Context) error {
 	close(p.ready)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(p.path, p.handle)
+	for path, topic := range p.routes {
+		mux.HandleFunc(path, p.handler(topic))
+	}
 	srv := &http.Server{
 		Handler:           mux,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
@@ -188,7 +211,7 @@ func (p *Producer) Start(ctx context.Context) error {
 			errCh <- srv.Serve(ln)
 		}
 	}()
-	p.log.Info("webhook server listening", "addr", p.addr.String(), "path", p.path, "tls", p.certFile != "")
+	p.log.Info("webhook server listening", "addr", p.addr.String(), "routes", p.routes, "tls", p.certFile != "")
 
 	select {
 	case err := <-errCh:
@@ -206,8 +229,14 @@ func (p *Producer) Start(ctx context.Context) error {
 	}
 }
 
-// handle runs one request/response round trip through the circuit.
-func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
+// handler returns the HTTP handler publishing its requests to topic.
+func (p *Producer) handler(topic string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { p.handle(topic, w, r) }
+}
+
+// handle runs one request/response round trip through the circuit,
+// publishing the request to topic.
+func (p *Producer) handle(topic string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
@@ -250,7 +279,7 @@ func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
 		sub.UnsubscribeAll()
 	}()
 
-	if err := p.publish(doc, 1); err != nil {
+	if err := p.publish(topic, doc, 1); err != nil {
 		p.HandleError(fmt.Errorf("publish request %s: %w", uid, err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -258,7 +287,7 @@ func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
 	// Retract the request once answered (or abandoned), so the circuit
 	// holds no state for it.
 	defer func() {
-		if err := p.publish(doc, -1); err != nil {
+		if err := p.publish(topic, doc, -1); err != nil {
 			p.HandleError(fmt.Errorf("retract request %s: %w", uid, err))
 		}
 	}()
@@ -281,8 +310,6 @@ func (p *Producer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	pretty, _ := json.MarshalIndent(resp, "", " ")
-	fmt.Println("sending out http message with body\n", string(pretty))
 	_, _ = w.Write(out)
 }
 
@@ -308,11 +335,11 @@ func (p *Producer) await(sub dbspruntime.Subscriber) (any, bool) {
 	}
 }
 
-func (p *Producer) publish(doc *dbspunstructured.Unstructured, weight zset.Weight) error {
+func (p *Producer) publish(topic string, doc *dbspunstructured.Unstructured, weight zset.Weight) error {
 	zs := zset.New()
 	zs.Insert(doc, weight)
-	dbspruntime.LogFlowEvent(p.log, "producer.emit", "producer", p.String(), "output", p.topic, "", zs, nil)
-	return p.Publish(dbspruntime.Event{Name: p.topic, Data: zs})
+	dbspruntime.LogFlowEvent(p.log, "producer.emit", "producer", p.String(), "output", topic, "", zs, nil)
+	return p.Publish(dbspruntime.Event{Name: topic, Data: zs})
 }
 
 func (p *Producer) acquire(uid string) bool {

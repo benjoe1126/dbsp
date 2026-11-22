@@ -27,6 +27,8 @@ require (
 
 replace github.com/l7mp/dbsp/connectors/kubernetes v0.0.0 => ../connectors/kubernetes
 
+replace github.com/l7mp/dbsp/connectors/webhook v0.0.0 => ../connectors/webhook
+
 replace github.com/l7mp/dbsp/connectors/misc v0.0.0 => ../connectors/misc
 
 replace github.com/l7mp/dbsp/connectors/xds v0.0.0 => ../connectors/xds

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/l7mp/dbsp/engine/runtime"
+	dbspruntime "github.com/l7mp/dbsp/engine/runtime"
 	"github.com/l7mp/dbsp/engine/spec"
 )
 
@@ -15,11 +15,11 @@ const Group = "webhook.connector.dcontroller.io"
 // sources publishing requests, and targets routing the circuit's
 // responses back to the waiting requests. A source and the target
 // answering it name the same parameters.server.
-func NewFactory() runtime.ConnectorFactory {
-	return runtime.ConnectorFactory{
+func NewFactory() dbspruntime.ConnectorFactory {
+	return dbspruntime.ConnectorFactory{
 		Name:   "webhook",
 		Groups: []string{Group},
-		NewSource: func(rt *runtime.Runtime, s *spec.Source, topic string) (runtime.Runnable, error) {
+		NewSource: func(rt *dbspruntime.Runtime, s *spec.Source, topic string) (dbspruntime.Runnable, error) {
 			if s.Type != "" && s.Type != spec.Watcher {
 				return nil, fmt.Errorf("unknown webhook source type %q", s.Type)
 			}
@@ -31,7 +31,7 @@ func NewFactory() runtime.ConnectorFactory {
 			}
 			return NewProducer(topic, ps, Deps{Runtime: rt, Logger: rt.Logger()})
 		},
-		NewTarget: func(rt *runtime.Runtime, t *spec.Target, topic string) (runtime.Runnable, error) {
+		NewTarget: func(rt *dbspruntime.Runtime, t *spec.Target, topic string) (dbspruntime.Runnable, error) {
 			if t.Type != "" && t.Type != spec.Updater {
 				return nil, fmt.Errorf("unknown webhook target type %q", t.Type)
 			}
